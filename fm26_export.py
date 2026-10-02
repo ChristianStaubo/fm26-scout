@@ -57,8 +57,8 @@ ATTRIBUTES = [
     'Composure', 'Concentration',
 ]
 
-# Player block, offsets relative to the start of the 6 x 00 run.
-PLAYER_BLOCK = re.compile(rb'\x00{6}([\x01-\x14]{15})([\x01-\x64]{54})')
+# Player block, offsets relative to the start of the 6 x 00 (or ff) run.
+PLAYER_BLOCK = re.compile(rb'(?:\x00{6}|\xff{6})([\x01-\x14]{15})([\x01-\x64]{54})')  # ff = e.g. no club
 PLAYER_INDEX = -37           # u32 player index (match records use index + 1)
 PLAYER_CA_PA = -18           # u16 CA, u16 PA
 PLAYER_CLUB = -2             # u16 club index
@@ -183,10 +183,15 @@ def name_tables(db):
                 break
             prev, j = idv, j + 8 + ln
         if len(ents) >= 200:
-            tables.append(ents)
             seen = j
+            if 0 not in ents and tables:  # tables can be split in pieces; each table starts at id 0
+                tables[-1].update(ents)
+                continue
             if len(tables) == 3:
                 return tables
+            tables.append(ents)
+    if len(tables) == 3:
+        return tables
     sys.exit('Could not locate name tables.')
 
 
@@ -384,7 +389,7 @@ def parse_player(db, block, end, names, clubs, stats, today):
         'name': common or f'{first} {last}',
         'full_name': full_name,
         'dob': born, 'age': age,
-        'club': clubs.get(club, f'club#{club}'),
+        'club': 'Free agent' if club == 0xffff else clubs.get(club, f'club#{club}'),
         'wage': u32(contracts[-1].group(1)) if contracts else None,
         'ca': ca, 'pa': pa, 'growth': pa - ca,
         'positions': '/'.join(n for n, r in pos.items() if r == 20),
