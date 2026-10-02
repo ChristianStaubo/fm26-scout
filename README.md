@@ -148,6 +148,10 @@ getting Claude to debug it.
 
 - Stats only exist for leagues loaded in your save, and cover the most recent
   season. Minutes are derived from substitution times and can be a few % off.
+- Leagues other than your own are simulated at lower detail: they record about
+  half the events (passes, shots...) and almost no distance. That's why players
+  are only ranked against their own league, and why distance isn't used for
+  scoring - compare percentiles and CA across leagues, not raw per-90 numbers.
 - Some players' club can't be resolved (`club#<id>`, ~15-30% depending on the
   save, mostly smaller clubs and youth sides) and some wages are missing.
 - Not exported (yet): transfer value, nationality, personality, trophies.

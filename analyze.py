@@ -19,10 +19,11 @@ import bisect
 import collections
 import csv
 
+# Distance is left out on purpose: leagues simulated at lower detail barely record it.
 GROUPS = {  # group: (natural positions, key stats)
     'CB': ({'DC'}, ['header_pct', 'headers_won_p90', 'tackles_won_p90', 'tackle_pct', 'pass_pct', 'avg_rating']),
-    'FB': ({'DL', 'DR', 'WBL', 'WBR'}, ['tackles_won_p90', 'crosses_cmp_p90', 'assists_p90', 'passes_cmp_p90', 'distance_p90', 'avg_rating']),
-    'DM': ({'DM'}, ['passes_cmp_p90', 'pass_pct', 'tackles_won_p90', 'tackle_pct', 'distance_p90', 'avg_rating']),
+    'FB': ({'DL', 'DR', 'WBL', 'WBR'}, ['tackles_won_p90', 'tackle_pct', 'crosses_cmp_p90', 'assists_p90', 'passes_cmp_p90', 'avg_rating']),
+    'DM': ({'DM'}, ['passes_cmp_p90', 'pass_pct', 'tackles_won_p90', 'tackle_pct', 'headers_won_p90', 'avg_rating']),
     'CM': ({'MC'}, ['passes_cmp_p90', 'pass_pct', 'assists_p90', 'tackles_won_p90', 'xg_p90', 'avg_rating']),
     'W':  ({'AML', 'AMR', 'ML', 'MR'}, ['goals_p90', 'xg_p90', 'assists_p90', 'shots_p90', 'crosses_cmp_p90', 'avg_rating']),
     'AM': ({'AMC'}, ['goals_p90', 'xg_p90', 'assists_p90', 'passes_cmp_p90', 'shots_p90', 'avg_rating']),
