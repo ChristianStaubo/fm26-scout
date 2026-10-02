@@ -12,7 +12,7 @@ with an AI analyst to talk you through them.
 ## Quick start with Claude Code
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/fm26-scout.git
+git clone https://github.com/ChristianStaubo/fm26-scout.git
 cd fm26-scout
 claude
 ```
@@ -34,7 +34,7 @@ Examples:
 ```
 
 > **Moneyball only, in one line:**
-> `git clone https://github.com/YOUR_USERNAME/fm26-scout.git && cd fm26-scout && claude "/peter-brand"`
+> `git clone https://github.com/ChristianStaubo/fm26-scout.git && cd fm26-scout && claude "/peter-brand"`
 
 Claude finds your newest save, exports it, and answers from the data. Follow-up
 questions work too: *"who overperformed their xG?"*, *"cheapest left-back with
