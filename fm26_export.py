@@ -15,7 +15,8 @@ Format notes (reverse-engineered, FM26 v26.x):
     (first names, surnames, common names): [u32 id][u32 len][utf-8].
   * A player's data block comes *before* his name record (see PLAYER_*):
         ... u16 CA, u16 PA ... u16 club index, 6 x 00,
-        15 position ratings (1-20), 54 attributes (1-100, display = /5)
+        15 position ratings (1-20), 54 attributes (1-100, display = /5),
+        u32 transfer value
     followed (usually ~1-1.4 KB, up to ~12 KB for long careers) by:
         [contract ... u32 weekly wage ...]
         [flag][u32 first][flag][u32 surname][flag][u32 common|-1]
@@ -63,6 +64,7 @@ PLAYER_BLOCK = re.compile(rb'(?:\x00{6}|\xff{6})([\x01-\x14]{15})([\x01-\x64]{54
 PLAYER_INDEX = -37           # u32 player index (match records use index + 1)
 PLAYER_CA_PA = -18           # u16 CA, u16 PA
 PLAYER_CLUB = -2             # u16 club index
+PLAYER_VALUE = 75            # u32 transfer value in £ (the game shows a scouted range around it)
 NAME_SEARCH = (80, 12000)    # name record lies this far after the block
 CONTRACT_LOOKBACK = 400      # contract lies within this many bytes before the name
 # contract: [u16 club][6 x 00][u32 weekly wage][01 xx 00][ff x 4]
@@ -423,6 +425,7 @@ def parse_player(db, block, end, names, clubs, stats, today):
         'dob': born, 'age': age,
         'club': 'Free agent' if club == 0xffff else clubs.get(club, f'club#{club}'),
         'wage': wage,
+        'value': u32(db, p + PLAYER_VALUE),
         'ca': ca, 'pa': pa, 'growth': pa - ca,
         'positions': '/'.join(n for n, r in pos.items() if r == 20),
         'foot': 'Either' if min(left, right) >= 75 else ('Left' if left > right else 'Right'),

@@ -28,7 +28,7 @@ Then ask in plain English, or use the two built-in commands:
 | `/scout` | Wonderkids, highest CA, best newgens, a club's squad, how a player developed between two saves |
 
 ```
-/peter-brand "Brighton & Hove Albion" 40000
+/peter-brand "Brighton & Hove Albion", fees up to £25M, wages up to £40K a week
 /scout top 20 wonderkids in my latest save
 /scout best newgens by current ability
 /scout compare Richie Phillips between "online-save-0" and "online-save-2"
@@ -52,7 +52,7 @@ rating?"*, *"which of these could I actually afford?"*.
    percentile of that position's key per-90 stats.
 2. **Weakest positions** - the groups where even your best player scores lowest.
 3. **Moneyball shortlist** - players elsewhere who outscore your best player in
-   that position, on a wage under your ceiling.
+   that position, under your transfer-value and wage ceilings.
 4. **Wonderkids** - 21 or under, high PA, already playing senior minutes.
 
 Percentiles are within each player's own league, so an 80 in Ligue 2 is not an
@@ -80,7 +80,7 @@ python3 fm26_export.py "path/to/save.fm"
 python3 fm26_export.py "path/to/save.fm" --max-age 21 --min-pa 150
 
 # Squad audit + Moneyball + wonderkid shortlists
-python3 analyze.py "exports/<save>_<date>.csv" --club "Brighton & Hove Albion" --max-wage 40000
+python3 analyze.py "exports/<save>_<date>.csv" --club "Brighton & Hove Albion" --max-value 25 --max-wage 40000
 ```
 
 Saves live in:
@@ -95,7 +95,7 @@ save that is being written at that moment can fail; just run it again.
 
 One row per player:
 
-- name, date of birth, age, club, weekly wage
+- name, date of birth, age, club, weekly wage, **transfer value**
 - **CA / PA** (current / potential ability, 1-200)
 - natural positions and a 1-20 rating for every position, preferred foot
 - all **54 attributes** on the 1-20 scale, including hidden ones (consistency,
@@ -154,7 +154,7 @@ getting Claude to debug it.
   scoring - compare percentiles and CA across leagues, not raw per-90 numbers.
 - Some players' club can't be resolved (`club#<id>`, ~15-30% depending on the
   save, mostly smaller clubs and youth sides) and some wages are missing.
-- Not exported (yet): transfer value, nationality, personality, trophies.
+- Not exported (yet): nationality, personality, contract length, trophies.
 - If your save has women's leagues, women appear in the attribute export;
   Moneyball only uses players with club-competition minutes.
 

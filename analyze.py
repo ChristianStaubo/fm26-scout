@@ -3,7 +3,7 @@
 
 Usage:
     python3 analyze.py exports/<save>.csv --club "Brighton & Hove Albion"
-    python3 analyze.py exports/<save>.csv --club "Brighton & Hove Albion" --max-wage 40000
+    python3 analyze.py exports/<save>.csv --club "Brighton & Hove Albion" --max-value 25 --max-wage 40000
 
 How it scores players:
   * Each player is put in a position group from his natural positions.
@@ -11,7 +11,8 @@ How it scores players:
     percentile on those stats among players of the same group in the same
     competition (min. --min-minutes).
   * Squad audit: your regulars' scores and per-stat percentiles.
-  * Moneyball: outscores your best player in that group, low wage, age <= --max-age-moneyball.
+  * Moneyball: outscores your best player in that group, under --max-value and --max-wage,
+    age <= --max-age-moneyball.
   * Wonderkids: age <= --max-age-wonderkid, high PA, already playing senior minutes.
 """
 import argparse
@@ -80,6 +81,11 @@ def fmt_money(w):
     return f'£{w / 1000:.0f}K' if w else '-'
 
 
+def fmt_value(v):
+    v = num(v)
+    return f'£{v / 1e6:.1f}M' if v else '-'
+
+
 def table(rows, cols, title):
     print(f'\n{title}')
     if not rows:
@@ -95,7 +101,8 @@ BASE_COLS = [('player', lambda r: r['name'])]
 MIN_SCORE_COLS = [('min', lambda r: int(r['_min'])), ('score', lambda r: round(r['_score']))]
 SHORTLIST_COLS = BASE_COLS + [
     ('age', lambda r: r['age']), ('club', lambda r: r['club'][:24]),
-    ('league', lambda r: r['competition'][:20]), ('wage', lambda r: fmt_money(r['wage'])),
+    ('league', lambda r: r['competition'][:20]), ('value', lambda r: fmt_value(r['value'])),
+    ('wage/wk', lambda r: fmt_money(r['wage'])),
 ] + MIN_SCORE_COLS + [('CA', lambda r: r['ca']), ('PA', lambda r: r['pa'])]
 
 
@@ -106,6 +113,7 @@ def main():
     ap.add_argument('--league', help="league named in the audit heading (default: your club's)")
     ap.add_argument('--min-minutes', type=int, default=900)
     ap.add_argument('--max-wage', type=int, default=50000, help='Moneyball wage ceiling (per week)')
+    ap.add_argument('--max-value', type=float, default=30, help='Moneyball transfer value ceiling, in £ millions')
     ap.add_argument('--max-age-moneyball', type=int, default=28)
     ap.add_argument('--max-age-wonderkid', type=int, default=21)
     ap.add_argument('--min-pa', type=int, default=150, help='wonderkid potential threshold')
@@ -137,11 +145,12 @@ def main():
         # startswith also excludes our own "<club> U21/U18" youth sides
         pool = [r for r in rows if r['_group'] == g and not r['club'].startswith(a.club)]
         money = [r for r in pool if num(r['age'], 99) <= a.max_age_moneyball
-                 and 0 < num(r['wage'], 0) <= a.max_wage and r['_score'] >= best_score[g]]
+                 and 0 < num(r['wage'], 0) <= a.max_wage and num(r['value'], 0) <= a.max_value * 1e6
+                 and r['_score'] >= best_score[g]]
         money.sort(key=lambda r: r['_score'], reverse=True)
         table(money[:a.top], SHORTLIST_COLS,
-              f'Moneyball {g}: outscore your best {g} ({best_score[g]:.0f}), wage <= £{a.max_wage // 1000}K, '
-              f'age <= {a.max_age_moneyball}')
+              f'Moneyball {g}: outscore your best {g} ({best_score[g]:.0f}), value <= £{a.max_value:g}M, '
+              f'wage <= £{a.max_wage // 1000}K/wk, age <= {a.max_age_moneyball}')
         kids = [r for r in pool if num(r['age'], 99) <= a.max_age_wonderkid and num(r['pa'], 0) >= a.min_pa]
         kids.sort(key=lambda r: (-num(r['pa'], 0), -r['_score']))
         table(kids[:a.top], SHORTLIST_COLS,
