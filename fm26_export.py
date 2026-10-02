@@ -26,6 +26,7 @@ Format notes (reverse-engineered, FM26 v26.x):
     player (see REC_*). Season stats are the sum of those records.
 """
 import argparse
+import collections
 import csv
 import datetime as dt
 import os
@@ -78,6 +79,7 @@ MAX_TEAM_INDEX = 100000
 #   [02][u32 id][u8 shirt][u8 side 0=home/1=away][02][u32][02][u32][u8][u8 fit start][u8 fit end]
 MATCH_RECORD = re.compile(rb'(?=\x02(.{4})[\x00-\x63][\x00\x01]\x02.{4}\x02.{4}.[\x00-\x64][\x00-\x64])', re.S)
 MATCH_TEAMS = re.compile(rb'\x03\x02(.{4})\x02', re.S)
+MATCH_SEASON = 19           # u16 season start year in the match header
 MATCH_COMP = re.compile(rb'[\x03-\x40]\x00\x00\x00([A-Z][^\x00-\x1f]{2,60}?)[\x03-\x40]\x00\x00\x00\1', re.S)
 REC_LEN = 230
 REC_SIDE = 5
@@ -292,16 +294,29 @@ def match_records(x):
     return {mid: (rating, rec) for mid, (_, rating, rec) in best.items()}
 
 
+def match_header(x):
+    """(home/away team indices, competition name or None, season year) of one match frame."""
+    teams = [u32(m.group(1)) for m in MATCH_TEAMS.finditer(x[:600])][:2]
+    comp = MATCH_COMP.search(x[:600])
+    comp = comp.group(1).decode('utf-8', 'replace') if comp else None
+    return teams, comp, struct.unpack_from('<H', x, MATCH_SEASON)[0]
+
+
 def season_stats(frames, clubs):
-    """Sum club-competition match records per player index (friendlies/internationals excluded)."""
+    """Sum club-competition match records per player index (friendlies/internationals excluded).
+
+    Saves keep some matches from neighbouring seasons, so per competition only the
+    season with the most matches is counted.
+    """
+    matches = [(x, *match_header(x)) for x in frames if len(x) > MATCH_SEASON + 2]
+    matches = [m for m in matches if len(m[1]) == 2 and m[2] != 'Friendly']
+    per_season = collections.Counter((comp, season) for _, _, comp, season in matches)
+    main_season = {}
+    for (comp, season), n in per_season.most_common():
+        main_season.setdefault(comp, season)
     totals = {}
-    for x in frames:
-        teams = [u32(m.group(1)) for m in MATCH_TEAMS.finditer(x[:600])][:2]
-        if len(teams) < 2:
-            continue
-        comp = MATCH_COMP.search(x[:600])
-        comp = comp.group(1).decode('utf-8', 'replace') if comp else None
-        if comp == 'Friendly':
+    for x, teams, comp, season in matches:
+        if season != main_season[comp]:
             continue
         for mid, (rating, rec) in match_records(x).items():
             if teams[rec[REC_SIDE]] not in clubs:  # player's side is a national team
