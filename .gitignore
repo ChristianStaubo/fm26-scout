@@ -1,0 +1,10 @@
+# Exported CSVs contain Sports Interactive's player database - never commit them
+exports/
+*.csv
+
+# Save files
+*.fm
+
+__pycache__/
+*.pyc
+.DS_Store
