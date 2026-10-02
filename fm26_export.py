@@ -65,7 +65,8 @@ PLAYER_CA_PA = -18           # u16 CA, u16 PA
 PLAYER_CLUB = -2             # u16 club index
 NAME_SEARCH = (80, 12000)    # name record lies this far after the block
 CONTRACT_LOOKBACK = 400      # contract lies within this many bytes before the name
-CONTRACT = re.compile(rb'.{4}\x00{6}(.{4})\x01\x0b\x00\xff\xff\xff\xff', re.S)  # group 1 = wage
+# contract: [u16 club][6 x 00][u32 weekly wage][01 xx 00][ff x 4]
+CONTRACT = re.compile(rb'(?=(.{2})\x00{6}(.{4})\x01(.)\x00\xff\xff\xff\xff)', re.S)
 NAME_CANDIDATE = re.compile(rb'(?=.{16}[\x00-\x78]\x00\x00\x00)', re.S)  # full-name length <= 120
 
 # Club records.
@@ -382,15 +383,31 @@ def find_name(db, start, end, names):
     return None
 
 
+def find_wage(db, start, end, club, clubs):
+    """Weekly wage from the player's contract.
+
+    The marker byte is usually 0x0b; other values only count when the contract's
+    club is the player's club or its parent (youth players' contracts name the
+    parent club).
+    """
+    contracts = [(struct.unpack('<H', m.group(1))[0], u32(m.group(2)), m.group(3)) for m in CONTRACT.finditer(db, start, end)]
+    usual = [wage for _, wage, mark in contracts if mark == b'\x0b']
+    if usual:
+        return usual[-1]
+    team = clubs.get(club, '')
+    matching = [wage for c, wage, _ in contracts if c == club or (c in clubs and team.startswith(clubs[c] + ' '))]
+    return matching[-1] if matching else None
+
+
 def parse_player(db, block, end, names, clubs, stats, today):
     p = block.start()
     found = find_name(db, p + NAME_SEARCH[0], end, names)
     if not found:
         return None
     q, (first, last, common, full, dob) = found
-    contracts = list(CONTRACT.finditer(db, max(p, q - CONTRACT_LOOKBACK), q))
-    ca, pa = struct.unpack_from('<HH', db, p + PLAYER_CA_PA)
     club = struct.unpack_from('<H', db, p + PLAYER_CLUB)[0]
+    wage = find_wage(db, max(p, q - CONTRACT_LOOKBACK), q, club, clubs)
+    ca, pa = struct.unpack_from('<HH', db, p + PLAYER_CA_PA)
     pos = dict(zip(POSITIONS, block.group(1)))
     attrs = dict(zip(ATTRIBUTES, block.group(2)))
     left, right = attrs['Left Foot'], attrs['Right Foot']
@@ -405,7 +422,7 @@ def parse_player(db, block, end, names, clubs, stats, today):
         'full_name': full_name,
         'dob': born, 'age': age,
         'club': 'Free agent' if club == 0xffff else clubs.get(club, f'club#{club}'),
-        'wage': u32(contracts[-1].group(1)) if contracts else None,
+        'wage': wage,
         'ca': ca, 'pa': pa, 'growth': pa - ca,
         'positions': '/'.join(n for n, r in pos.items() if r == 20),
         'foot': 'Either' if min(left, right) >= 75 else ('Left' if left > right else 'Right'),
