@@ -24,7 +24,10 @@ Format notes (reverse-engineered, FM26 v26.x):
   * Club records carry their own index near a repeated-u32 marker; clubs
     without the marker are numbered by interpolating between anchors.
   * match_stats_cfg.dat holds one zstd frame per match with a stat record per
-    player (see REC_*). Season stats are the sum of those records.
+    player (see REC_*, STAT_FIELDS, GK_FIELDS). Season stats are the sum of
+    those records.
+  * Contracts, loans, squad status and nationality: see fm26_contracts.py.
+    Club finances: see fm26_finance.py.
 """
 import argparse
 import collections
@@ -37,6 +40,8 @@ import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+
+import fm26_contracts
 
 HEADER = 26
 ZSTD_FRAME = re.compile(re.escape(b'\x28\xb5\x2f\xfd'))
@@ -87,17 +92,28 @@ MATCH_COMP = re.compile(rb'[\x03-\x40]\x00\x00\x00([A-Z][^\x00-\x1f]{2,60}?)[\x0
 REC_LEN = 230
 REC_SIDE = 5
 REC_SUB_MARK = 16            # 255 for a regular record
+REC_BENCH = 69               # 100 + no distance + a 6.40 rating = unused substitute (lower-detail matches)
 REC_UNUSED = 98              # 100 = unused substitute
 REC_SUB_TIMES = 100          # u32 on, u32 off, in quarter-seconds (NONE = not subbed)
 REC_RATING = 135             # u16 rating x 100
 REC_CHECK = 138
 STAT_FIELDS = {  # name: (offset, struct format) - verified against in-game squad totals
     'goals': (19, 'B'), 'xg': (24, '<f'), 'shots': (40, 'B'), 'shots_on_target': (41, 'B'),
-    'assists': (55, 'B'), 'fouls': (59, 'B'), 'yellow_cards': (62, 'B'),
+    'assists': (55, 'B'), 'dribbles': (57, 'B'), 'fouls': (59, 'B'), 'yellow_cards': (62, 'B'),
+    'progressive_passes': (177, 'B'), 'xa': (182, '<f'),  # xA: 186 holds a variant without set pieces (unverified)
+    'interceptions': (97, 'B'), 'clearances': (152, 'B'), 'shots_blocked': (54, 'B'), 'key_tackles': (93, 'B'),
+    'poss_won': (150, 'B'), 'poss_lost': (151, 'B'), 'pressures_att': (159, 'B'), 'pressures_cmp': (160, 'B'),
+    'mistakes_to_goal': (143, 'B'),
     'passes_att': (85, 'B'), 'passes_cmp': (86, 'B'), 'crosses_att': (88, 'B'), 'crosses_cmp': (89, 'B'),
     'tackles_att': (91, 'B'), 'tackles_won': (92, 'B'), 'headers_att': (94, 'B'), 'headers_won': (95, 'B'),
     'distance_m': (139, '<f'),
 }
+GK_FIELDS = {  # recorded while the player is in goal - verified against the in-game goalkeeper stats
+    'conceded': (20, 'B'), 'xg_faced': (28, '<f'), 'xgot_faced': (32, '<f'),
+    'saves_held': (49, 'B'), 'saves_parried': (50, 'B'), 'saves_tipped': (51, 'B'),
+    'pens_faced': (52, 'B'), 'pens_saved': (53, 'B'), 'sot_faced': (156, 'B'),
+}
+CLEAN_SHEET_MINUTES = 60
 
 
 def u32(buf, off=0):
@@ -275,6 +291,9 @@ def minutes_played(rec):
     on, off = struct.unpack_from('<II', rec, REC_SUB_TIMES)
     if rec[REC_UNUSED] == 100 and on == NONE:
         return 0  # unused substitute
+    if (rec[REC_BENCH] == 100 and struct.unpack_from('<H', rec, REC_RATING)[0] == 640
+            and struct.unpack_from('<f', rec, STAT_FIELDS['distance_m'][0])[0] == 0):
+        return 0  # unused substitute in a lower-detail match
     start = 0 if on == NONE else on / 240
     end = 90 if off == NONE else min(off / 240, 90)
     return max(1, end - start)
@@ -327,7 +346,8 @@ def season_stats(frames, clubs):
             mins = minutes_played(rec)
             if mins == 0:
                 continue
-            t = totals.setdefault(mid - 1, {**dict.fromkeys(['apps', 'minutes', 'rating_sum', *STAT_FIELDS], 0),
+            t = totals.setdefault(mid - 1, {**dict.fromkeys(['apps', 'minutes', 'rating_sum', *STAT_FIELDS,
+                                                             'gk_apps', 'gk_minutes', 'clean_sheets', *GK_FIELDS], 0),
                                             'comps': {}})
             if comp:
                 t['comps'][comp] = t['comps'].get(comp, 0) + mins
@@ -336,7 +356,37 @@ def season_stats(frames, clubs):
             t['rating_sum'] += rating / 100
             for k, (off, fmt) in STAT_FIELDS.items():
                 t[k] += struct.unpack_from(fmt, rec, off)[0]
+            gk = {k: struct.unpack_from(fmt, rec, off)[0] for k, (off, fmt) in GK_FIELDS.items()}
+            if not 0 <= gk['xgot_faced'] <= 10:
+                gk['xgot_faced'] = 0.0  # a few records hold garbage (~1e27) here
+            if gk['sot_faced'] or gk['conceded'] or gk['xg_faced'] > 0:  # in goal (lower-detail matches lack GK data)
+                t['gk_apps'] += 1
+                t['gk_minutes'] += mins
+                t['clean_sheets'] += gk['conceded'] == 0 and mins >= CLEAN_SHEET_MINUTES
+                for k, v in gk.items():
+                    t[k] += v
     return totals
+
+
+def gk_columns(t):
+    if not t['gk_minutes']:
+        return {}
+    n90 = t['gk_minutes'] / 90
+    sot = t['sot_faced']
+    saves = t['saves_held'] + t['saves_parried'] + t['saves_tipped']
+    # The game's xGP: xG of every shot faced (on target or not) minus goals conceded - matches the in-game
+    # value. Mostly noise over one season (it credits the keeper for shots that miss the target).
+    xgp = t['xg_faced'] - t['conceded']
+    return {
+        'gk_apps': t['gk_apps'], 'clean_sheets': t['clean_sheets'], 'conceded': t['conceded'],
+        'saves': saves, 'sot_faced': sot,
+        'save_pct': round(100 * saves / sot, 1) if sot else None,
+        'xsave_pct': round(100 * (1 - t['xgot_faced'] / sot), 1) if sot else None,  # the game's (inflated) xSv %
+        'xgp': round(xgp, 2), 'xg_faced': round(t['xg_faced'], 2),
+        'pens_faced': t['pens_faced'], 'pens_saved': t['pens_saved'],
+        'conceded_p90': round(t['conceded'] / n90, 2), 'saves_p90': round(saves / n90, 2),
+        'xgp_p90': round(xgp / n90, 2),
+    }
 
 
 def stat_columns(t):
@@ -355,7 +405,7 @@ def stat_columns(t):
         'competition': max(t['comps'], key=t['comps'].get) if t['comps'] else '',
         'apps': t['apps'], 'minutes': round(t['minutes']),
         'avg_rating': round(t['rating_sum'] / t['apps'], 2),
-        'goals': t['goals'], 'assists': t['assists'], 'xg': round(t['xg'], 2),
+        'goals': t['goals'], 'assists': t['assists'], 'xg': round(t['xg'], 2), 'xa': round(t['xa'], 2),
         'goals_minus_xg': round(t['goals'] - t['xg'], 2),
         'shots': t['shots'], 'shots_on_target': t['shots_on_target'],
         'passes_att': t['passes_att'], 'pass_pct': pct(t['passes_cmp'], t['passes_att']),
@@ -366,8 +416,18 @@ def stat_columns(t):
         'distance_km': round(km, 1),
         'goals_p90': per90(t['goals']), 'assists_p90': per90(t['assists']), 'xg_p90': per90(t['xg']),
         'shots_p90': per90(t['shots']), 'passes_cmp_p90': per90(t['passes_cmp']),
+        'xa_p90': per90(t['xa']), 'progressive_passes_p90': per90(t['progressive_passes']),
+        'dribbles_p90': per90(t['dribbles']),
+        'interceptions': t['interceptions'], 'clearances': t['clearances'], 'shots_blocked': t['shots_blocked'],
+        'key_tackles': t['key_tackles'], 'mistakes_to_goal': t['mistakes_to_goal'],
+        'pressures_att': t['pressures_att'], 'pressure_pct': pct(t['pressures_cmp'], t['pressures_att']),
+        'interceptions_p90': per90(t['interceptions']), 'clearances_p90': per90(t['clearances']),
+        'shots_blocked_p90': per90(t['shots_blocked']), 'poss_won_p90': per90(t['poss_won']),
+        'poss_lost_p90': per90(t['poss_lost']), 'pressures_att_p90': per90(t['pressures_att']),
+        'headers_att_p90': per90(t['headers_att']),
         'tackles_won_p90': per90(t['tackles_won']), 'headers_won_p90': per90(t['headers_won']),
         'crosses_cmp_p90': per90(t['crosses_cmp']), 'distance_p90': per90(km),
+        **gk_columns(t),
     }
 
 
@@ -408,7 +468,11 @@ def parse_player(db, block, end, names, clubs, stats, today):
         return None
     q, (first, last, common, full, dob) = found
     club = struct.unpack_from('<H', db, p + PLAYER_CLUB)[0]
-    wage = find_wage(db, max(p, q - CONTRACT_LOOKBACK), q, club, clubs)
+    contract = fm26_contracts.contract_status(db, p, q, club, clubs)
+    wage = contract.pop('wage', None)
+    if wage is None:
+        wage = find_wage(db, max(p, q - CONTRACT_LOOKBACK), q, club, clubs)
+    _, nation = fm26_contracts.nationality(db, q)
     ca, pa = struct.unpack_from('<HH', db, p + PLAYER_CA_PA)
     pos = dict(zip(POSITIONS, block.group(1)))
     attrs = dict(zip(ATTRIBUTES, block.group(2)))
@@ -423,20 +487,27 @@ def parse_player(db, block, end, names, clubs, stats, today):
         'name': common or f'{first} {last}',
         'full_name': full_name,
         'dob': born, 'age': age,
-        'club': 'Free agent' if club == 0xffff else clubs.get(club, f'club#{club}'),
+        'club': 'Free agent' if club == 0xffff else clubs.get(club, f'club#{club}'),  # loan club while on loan
+        'nation': nation,
         'wage': wage,
+        'contract_expires': contract.get('contract_expires'),
+        'squad_status': contract.get('squad_status'),
+        'contract_club': contract.get('contract_club'),
+        'on_loan_at': contract.get('on_loan_at'), 'loan_ends': contract.get('loan_ends'),
         'value': u32(db, p + PLAYER_VALUE),
         'ca': ca, 'pa': pa, 'growth': pa - ca,
         'positions': '/'.join(n for n, r in pos.items() if r == 20),
         'foot': 'Either' if min(left, right) >= 75 else ('Left' if left > right else 'Right'),
     }
+    row.update({k: contract.get(k) for k in ('joined_club', 'renewal_expires', 'contract_offers',
+                                              *fm26_contracts.BONUS_TYPES.values())})
     row.update(stat_columns(stats.get(u32(db, p + PLAYER_INDEX))))
     row.update({f'pos_{n}': r for n, r in pos.items() if n != 'SW'})
     row.update({a: round(v / 5) for a, v in attrs.items()})
     return row
 
 
-def extract(path):
+def extract(path, finances=False):
     raw = Path(path).read_bytes()
     entries = read_directory(raw)
     today = game_date(read_entry(raw, entries, 'save_game_summary.dat'))
@@ -458,7 +529,31 @@ def extract(path):
         row = parse_player(db, block, end, names, clubs, stats, today)
         if row:
             players.append(row)
+    if finances:
+        import fm26_finance
+        return players, today, fm26_finance.all_finances(db, today)
     return players, today
+
+
+def club_rows(players, finances):
+    """One row per club with finances, plus its player wage bill (loaned-out players excluded)."""
+    squads = collections.defaultdict(list)
+    for p in players:
+        if p['contract_club'] and not p['on_loan_at']:
+            squads[p['contract_club']].append(p)
+    return [{'club': name, **f,
+             'player_wages_pw': sum(p['wage'] or 0 for p in squads[name]),
+             'players': len(squads[name]),
+             'loaned_out': sum(1 for p in players if p['contract_club'] == name and p['on_loan_at'])}
+            for name, f in finances.items()]
+
+
+def write_csv(path, rows):
+    with open(path, 'w', newline='', encoding='utf-8') as f:
+        # Rows can have different columns (e.g. players without stats), so take the union in first-seen order.
+        w = csv.DictWriter(f, fieldnames=list(dict.fromkeys(k for r in rows for k in r)))
+        w.writeheader()
+        w.writerows(rows)
 
 
 def main():
@@ -467,10 +562,13 @@ def main():
     ap.add_argument('-o', '--out', help='output CSV (default: exports/<save>_<date>.csv)')
     ap.add_argument('--max-age', type=int, help='only players this age or younger')
     ap.add_argument('--min-pa', type=int, help='only players with at least this potential ability')
+    ap.add_argument('--clubs', action='store_true', help='also write club finances to <output>_clubs.csv')
     a = ap.parse_args()
 
     print(f'Reading {a.save}', file=sys.stderr)
-    players, today = extract(a.save)
+    players, today, *finances = extract(a.save, a.clubs)
+    if a.clubs:
+        clubs_rows = club_rows(players, finances[0])
     if a.max_age is not None:
         players = [p for p in players if p['age'] is not None and p['age'] <= a.max_age]
     if a.min_pa is not None:
@@ -482,12 +580,12 @@ def main():
         tag = '_wonderkids' if a.max_age is not None or a.min_pa is not None else ''
         out = Path(__file__).resolve().parent / 'exports' / f'{Path(a.save).stem}_{today}{tag}.csv'
     Path(out).resolve().parent.mkdir(parents=True, exist_ok=True)
-    with open(out, 'w', newline='', encoding='utf-8') as f:
-        # Players without stats have fewer columns, so take the union in first-seen order.
-        w = csv.DictWriter(f, fieldnames=list(dict.fromkeys(k for p in players for k in p)))
-        w.writeheader()
-        w.writerows(players)
+    write_csv(out, players)
     print(f'Wrote {len(players)} players -> {out}', file=sys.stderr)
+    if a.clubs:
+        clubs_out = Path(out).with_name(Path(out).stem + '_clubs.csv')
+        write_csv(clubs_out, clubs_rows)
+        print(f'Wrote {len(clubs_rows)} clubs -> {clubs_out}', file=sys.stderr)
 
 
 if __name__ == '__main__':

@@ -79,6 +79,9 @@ python3 fm26_export.py "path/to/save.fm"
 # Wonderkids only
 python3 fm26_export.py "path/to/save.fm" --max-age 21 --min-pa 150
 
+# Also export club finances -> exports/<save>_<date>_clubs.csv
+python3 fm26_export.py "path/to/save.fm" --clubs
+
 # Squad audit + Moneyball + wonderkid shortlists
 python3 analyze.py "exports/<save>_<date>.csv" --club "Brighton & Hove Albion" --max-value 25 --max-wage 40000
 ```
@@ -95,7 +98,12 @@ save that is being written at that moment can fail; just run it again.
 
 One row per player:
 
-- name, date of birth, age, club, weekly wage, **transfer value**
+- name, date of birth, age, nationality, club, weekly wage, **transfer value**
+- **contract**: expiry date, squad status (Important Player, Backup...), date
+  joined, agreed renewals, contract offers from other clubs, appearance / goal /
+  clean-sheet / assist / unused-sub bonuses
+- **loans**: the club that owns the player and, while on loan, the loan club
+  and loan end date (`club` is the team he plays for now)
 - **CA / PA** (current / potential ability, 1-200)
 - natural positions and a 1-20 rating for every position, preferred foot
 - all **54 attributes** on the 1-20 scale, including hidden ones (consistency,
@@ -103,6 +111,13 @@ One row per player:
 - **season stats** from club competitions: apps, minutes, average rating, goals,
   assists, xG, goals minus xG, shots, passes, crosses, tackles, headers, fouls,
   yellow cards, distance - totals, success % and per 90
+- **goalkeeper stats**: clean sheets, goals conceded, saves, shots on target
+  faced, save %, and the game's own xSv % and xGP (xG faced minus conceded),
+  penalties faced and saved
+
+With `--clubs`, one row per club in a loaded league: latest month-end balance,
+transfer budget and amount remaining, wage budget, player wage bill,
+sponsorship, and income/expenditure over the last 12 months.
 
 ## Vibe coded with Claude Code
 
@@ -154,7 +169,13 @@ getting Claude to debug it.
   scoring - compare percentiles and CA across leagues, not raw per-90 numbers.
 - Some players' club can't be resolved (`club#<id>`, ~15-30% depending on the
   save, mostly smaller clubs and youth sides) and some wages are missing.
-- Not exported (yet): nationality, personality, contract length, trophies.
+- Not exported (yet): personality, injuries, release clauses, trophies. The live
+  club balance isn't stored as one number - `--clubs` gives the latest month-end
+  balance. Clubs outside loaded leagues have no finances.
+- Lower-detail leagues often record no goalkeeper data, so keepers there may
+  have partial or no goalkeeper stats. The game's xGP and xSv % are mostly
+  noise over a single season: xGP credits the keeper for shots that miss the
+  target, and xSv % is inflated for every keeper.
 - If your save has women's leagues, women appear in the attribute export;
   Moneyball only uses players with club-competition minutes.
 
