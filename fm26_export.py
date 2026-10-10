@@ -24,8 +24,11 @@ Format notes (reverse-engineered, FM26 v26.x):
   * Club records carry their own index near a repeated-u32 marker; clubs
     without the marker are numbered by interpolating between anchors.
   * match_stats_cfg.dat holds one zstd frame per match with a stat record per
-    player (see REC_*, STAT_FIELDS, GK_FIELDS). Season stats are the sum of
-    those records.
+    player (see REC_*, STAT_FIELDS, GK_FIELDS). It keeps every match of the
+    human manager's club but only ~the last 20 of every other club, so the
+    stat columns come from the season-history table where a player can be
+    linked to it (full league season, see fm26_history.py) and are the sum of
+    the match records otherwise (column stats_source).
   * Contracts, loans, squad status and nationality: see fm26_contracts.py.
     Club finances: see fm26_finance.py.
 """
@@ -42,6 +45,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import fm26_contracts
+import fm26_history
 
 HEADER = 26
 ZSTD_FRAME = re.compile(re.escape(b'\x28\xb5\x2f\xfd'))
@@ -88,7 +92,10 @@ MAX_TEAM_INDEX = 100000
 MATCH_RECORD = re.compile(rb'(?=\x02(.{4})[\x00-\x63][\x00\x01]\x02.{4}\x02.{4}.[\x00-\x64][\x00-\x64])', re.S)
 MATCH_TEAMS = re.compile(rb'\x03\x02(.{4})\x02', re.S)
 MATCH_SEASON = 19           # u16 season start year in the match header
-MATCH_COMP = re.compile(rb'[\x03-\x40]\x00\x00\x00([A-Z][^\x00-\x1f]{2,60}?)[\x03-\x40]\x00\x00\x00\1', re.S)
+# Competition: [u32 len][full name][u32 len][short name], e.g. "Italian Serie A" / "Serie A". The full
+# name is used (short names collide: English and Portuguese "Premier League").
+MATCH_COMP = re.compile(rb'(?=[\x03-\x40]\x00\x00\x00[A-Z])')
+NAME_BYTES = re.compile(rb'[^\x00-\x1f]+')
 REC_LEN = 230
 REC_SIDE = 5
 REC_SUB_MARK = 16            # 255 for a regular record
@@ -318,24 +325,49 @@ def match_records(x):
 
 def match_header(x):
     """(home/away team indices, competition name or None, season year) of one match frame."""
-    teams = [u32(m.group(1)) for m in MATCH_TEAMS.finditer(x[:600])][:2]
-    comp = MATCH_COMP.search(x[:600])
-    comp = comp.group(1).decode('utf-8', 'replace') if comp else None
+    found = list(MATCH_TEAMS.finditer(x[:600]))[:2]
+    teams = [u32(m.group(1)) for m in found]
+    comp = competition_name(x[:found[0].start() if found else 600])  # before the teams (the referee comes later)
     return teams, comp, struct.unpack_from('<H', x, MATCH_SEASON)[0]
 
 
-def season_stats(frames, clubs):
+def competition_name(header):
+    """Full competition name: the first [u32 len][name][u32 len][short name] pair in a match header."""
+    for m in MATCH_COMP.finditer(header):
+        i = m.start()
+        full, j = header[i + 4:i + 4 + header[i]], i + 4 + header[i]
+        if j + 4 > len(header) or not 3 <= header[j] <= 64 or header[j + 1:j + 4] != b'\x00\x00\x00':
+            continue
+        short = header[j + 4:j + 4 + header[j]]
+        if len(short) == header[j] and NAME_BYTES.fullmatch(full) and NAME_BYTES.fullmatch(short):
+            return full.decode('utf-8', 'replace')
+    return None
+
+
+def club_matches(frames):
+    """(frame, team indices, competition, season) of every non-friendly match."""
+    matches = [(x, *match_header(x)) for x in frames if len(x) > MATCH_SEASON + 2]
+    return [m for m in matches if len(m[1]) == 2 and m[2] != 'Friendly']
+
+
+def main_seasons(matches):
+    """Competition -> the season (start year) with the most matches in the save."""
+    main_season = {}
+    for (comp, season), _ in collections.Counter((comp, season) for _, _, comp, season in matches).most_common():
+        main_season.setdefault(comp, season)
+    return main_season
+
+
+def season_stats(frames, clubs, matches=None):
     """Sum club-competition match records per player index (friendlies/internationals excluded).
 
     Saves keep some matches from neighbouring seasons, so per competition only the
-    season with the most matches is counted.
+    season with the most matches is counted. For clubs other than the human
+    manager's, the save only keeps about the last 20 matches (see fm26_history).
     """
-    matches = [(x, *match_header(x)) for x in frames if len(x) > MATCH_SEASON + 2]
-    matches = [m for m in matches if len(m[1]) == 2 and m[2] != 'Friendly']
-    per_season = collections.Counter((comp, season) for _, _, comp, season in matches)
-    main_season = {}
-    for (comp, season), n in per_season.most_common():
-        main_season.setdefault(comp, season)
+    if matches is None:
+        matches = club_matches(frames)
+    main_season = main_seasons(matches)
     totals = {}
     for x, teams, comp, season in matches:
         if season != main_season[comp]:
@@ -431,6 +463,90 @@ def stat_columns(t):
     }
 
 
+# --- Full-season league stats (season history) ------------------------------------
+#
+# match_stats_cfg.dat keeps every match of the human manager's club, but only about the last 20
+# matches (roughly February onwards) of every other club, so the sums above are partial for most
+# players. Where a player can be linked to his full league season in the history table
+# (fm26_history), the stat columns hold that season instead: league only, every count the record
+# holds. Distance is not in the record: distance_km / distance_p90 stay on the per-match lines
+# (per 90 over window_minutes). stats_source says which source a row uses.
+
+HISTORY_WINDOW_FIELDS = {'goals': 19, 'assists': 55, 'shots': 40, 'passes_att': 85, 'tackles_att': 91,
+                         'interceptions': 97}  # u8 offsets in a match record (see STAT_FIELDS)
+
+
+def season_history(raw, entries, matches, clubs):
+    """fm26_history.SeasonHistory for this save, or None if the save lacks the tables.
+
+    Only leagues whose matches are in the save (named by them) and only the season the per-match
+    data covers (main_seasons) are linked, so a row never mixes seasons or holds a stale one."""
+    if fm26_history.HIST_DT not in entries or fm26_history.CURRENT not in entries:
+        return None
+    hist = fm26_history.SeasonHistory(read_entry(raw, entries, fm26_history.HIST_DT),
+                                      read_entry(raw, entries, fm26_history.CURRENT))
+    hist.league_names = fm26_history.league_names(hist.leagues, [m[1:] for m in matches])
+    seasons = main_seasons(matches)
+    # The season to link for a club: the one its league's per-match data covers, once it is closed.
+    hist.season_of = lambda club: next((y for y in hist.years if hist.league_name(club, y)
+                                        and seasons.get(hist.league_name(club, y)) == y and hist.complete(club, y)), None)
+    # Partial (per-match) league totals: a matched record must contain them (see SeasonHistory.candidates).
+    window = collections.defaultdict(collections.Counter)
+    for x, teams, comp, season in matches:
+        for mid, (_, rec) in match_records(x).items():
+            team = teams[rec[REC_SIDE]]
+            if team not in clubs or comp != hist.league_name(team, season) or minutes_played(rec) == 0:
+                continue
+            w = window[(mid - 1, team, season)]
+            w['minutes'] += minutes_played(rec)
+            for k, off in HISTORY_WINDOW_FIELDS.items():
+                w[k] += rec[off]
+    hist.window = window
+    hist.teams = collections.defaultdict(list)  # player index -> clubs he played league games for, most minutes first
+    for (idx, team, _), w in sorted(window.items(), key=lambda kv: -kv[1]['minutes']):
+        hist.teams[idx].append(team)
+    return hist
+
+
+def history_totals(hist, idx, keeper=False):
+    """(totals, club, season) of the player's full league season from the history table, or None."""
+    found = hist.find(idx) if hist else None
+    if not found:
+        return None
+    team, year, rec = found
+    t = fm26_history.record_totals(rec, keeper)
+    if not t['minutes']:
+        return None
+    t['comps'] = {hist.league_name(team, year): t['minutes']}
+    return t, team, year
+
+
+EXTRA_STAT_COLUMNS = ('stats_source', 'window_apps', 'window_minutes', 'starts', 'season_year', 'stats_club')
+
+
+def player_stat_columns(window, hist, idx, clubs, keeper=False):
+    """Stat columns of one player: his full league season if the history links him, else his
+    per-match (window) totals. Extra columns: stats_source (history | window | empty), window_apps
+    and window_minutes (what the per-match lines hold, all club competitions), and for history rows
+    starts, season_year and stats_club (the club of that league season)."""
+    found = history_totals(hist, idx, keeper)
+    w_apps = window['apps'] if window else 0
+    w_min = round(window['minutes']) if window else 0
+    if not found:
+        return {**stat_columns(window), 'stats_source': 'window' if window else '',
+                'window_apps': w_apps, 'window_minutes': w_min}
+    t, team, year = found
+    cols = stat_columns({k: 0 if v is None else v for k, v in t.items()})
+    if keeper:  # these record slots hold saves and penalties
+        cols.update(dict.fromkeys(('headers_att', 'header_pct', 'headers_att_p90', 'headers_won_p90',
+                                   'tackles_att', 'tackle_pct', 'tackles_won_p90')))
+    km = window['distance_m'] / 1000 if window and window['minutes'] else None
+    cols.update(distance_km=round(km, 1) if km is not None else None,
+                distance_p90=round(km / (window['minutes'] / 90), 2) if km is not None else None)
+    return {**cols, 'stats_source': 'history', 'window_apps': w_apps, 'window_minutes': w_min,
+            'starts': t['starts'], 'season_year': year, 'stats_club': clubs.get(team, f'club#{team}')}
+
+
 # --- Players -------------------------------------------------------------------
 
 def find_name(db, start, end, names):
@@ -461,7 +577,7 @@ def find_wage(db, start, end, club, clubs):
     return matching[-1] if matching else None
 
 
-def parse_player(db, block, end, names, clubs, stats, today):
+def parse_player(db, block, end, names, clubs, stats, today, history=None):
     p = block.start()
     found = find_name(db, p + NAME_SEARCH[0], end, names)
     if not found:
@@ -501,9 +617,13 @@ def parse_player(db, block, end, names, clubs, stats, today):
     }
     row.update({k: contract.get(k) for k in ('joined_club', 'renewal_expires', 'contract_offers',
                                               *fm26_contracts.BONUS_TYPES.values())})
-    row.update(stat_columns(stats.get(u32(db, p + PLAYER_INDEX))))
+    idx = u32(db, p + PLAYER_INDEX)
+    stat_cols = player_stat_columns(stats.get(idx), history, idx, clubs, pos['GK'] == 20)
+    extra = {k: stat_cols.pop(k) for k in EXTRA_STAT_COLUMNS if k in stat_cols}  # new columns go last
+    row.update(stat_cols)
     row.update({f'pos_{n}': r for n, r in pos.items() if n != 'SW'})
     row.update({a: round(v / 5) for a, v in attrs.items()})
+    row.update(extra)
     return row
 
 
@@ -517,18 +637,30 @@ def extract(path, finances=False):
     print(f'  database: {len(db) / 1e6:.0f} MB decompressed', file=sys.stderr)
     names = name_tables(db)
     clubs = club_index(db)
-    stats = season_stats(frames, clubs)
+    matches = club_matches(frames)
+    stats = season_stats(frames, clubs, matches)
     print(f'  season stats: {len(stats)} players with club appearances', file=sys.stderr)
+    history = season_history(raw, entries, matches, clubs)
 
     blocks = list(PLAYER_BLOCK.finditer(db))
+    if history:
+        player_clubs = {}
+        for block in blocks:
+            idx, club = u32(db, block.start() + PLAYER_INDEX), struct.unpack_from('<H', db, block.start() + PLAYER_CLUB)[0]
+            player_clubs[idx] = [club, *history.teams.get(idx, ())]
+        history.link(player_clubs)
     players = []
     for k, block in enumerate(blocks):
         end = block.start() + NAME_SEARCH[1]
         if k + 1 < len(blocks):
             end = min(end, blocks[k + 1].start())
-        row = parse_player(db, block, end, names, clubs, stats, today)
+        row = parse_player(db, block, end, names, clubs, stats, today, history)
         if row:
             players.append(row)
+    if history:
+        src = collections.Counter(p['stats_source'] for p in players)
+        print(f"  full league seasons: {src['history']} players from the season history, "
+              f"{src['window']} on per-match data only", file=sys.stderr)
     if finances:
         import fm26_finance
         return players, today, fm26_finance.all_finances(db, today)

@@ -108,9 +108,17 @@ One row per player:
 - natural positions and a 1-20 rating for every position, preferred foot
 - all **54 attributes** on the 1-20 scale, including hidden ones (consistency,
   important matches, injury proneness, versatility, dirtiness)
-- **season stats** from club competitions: apps, minutes, average rating, goals,
-  assists, xG, goals minus xG, shots, passes, crosses, tackles, headers, fouls,
-  yellow cards, distance - totals, success % and per 90
+- **season stats**: apps, minutes, average rating, goals, assists, xG, goals
+  minus xG, shots, passes, crosses, tackles, headers, fouls, yellow cards,
+  distance - totals, success % and per 90. Where a player can be linked to the
+  game's season-history table these are his **full league season**
+  (`stats_source` = `history`, with `starts`, `season_year`, `stats_club`);
+  otherwise the sum of the per-match lines the save keeps, all club
+  competitions (`stats_source` = `window`). The save keeps every match of your
+  club but only about the last 20 of every other club, so `window` rows of
+  other clubs cover part of a season. `window_apps` / `window_minutes` are what
+  the per-match lines hold; distance is only in those lines, so on `history`
+  rows `distance_p90` is per 90 of `window_minutes`.
 - **goalkeeper stats**: clean sheets, goals conceded, saves, shots on target
   faced, save %, and the game's own xSv % and xGP (xG faced minus conceded),
   penalties faced and saved
@@ -162,7 +170,13 @@ getting Claude to debug it.
 ## Known limitations
 
 - Stats only exist for leagues loaded in your save, and cover the most recent
-  season. Minutes are derived from substitution times and can be a few % off.
+  season. Minutes are derived from substitution times and can be a few % off;
+  in lower-detail matches some unused substitutes count as full matches, which
+  the season-history rows don't suffer from.
+- Full-season (`history`) rows need the player's league summary in the save.
+  Players who changed club mid-season get their current club's part; players
+  whose summary already shows the new season, and leagues whose nation hasn't
+  rolled over yet (right after a season), stay on the per-match window.
 - Leagues other than your own are simulated at lower detail: they record about
   half the events (passes, shots...) and almost no distance. That's why players
   are only ranked against their own league, and why distance isn't used for
