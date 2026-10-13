@@ -58,10 +58,6 @@ rating?"*, *"which of these could I actually afford?"*.
 Percentiles are within each player's own league, so an 80 in Ligue 2 is not an
 80 in the Premier League - check CA alongside the score.
 
-### Example: Brighton, end of 2025/26
-
-<!-- EXAMPLE: filled in from a real /peter-brand run with screenshots -->
-
 ## Requirements
 
 - Python 3.10+
