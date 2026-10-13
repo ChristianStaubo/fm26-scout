@@ -24,15 +24,20 @@ Request: $ARGUMENTS
    - **Moneyball targets** for each weak position: 2-3 names from the shortlist
      with age, club, league, transfer value, weekly wage, minutes and *why* the numbers like them.
      Prefer players with plenty of minutes; flag lower leagues (percentiles are
-     within each player's own league, so check CA too).
+     within each player's own league, so an 80 in a weak league is worth less than
+     an 80 in a strong one).
    - **Wonderkid option** for each weak position from the wonderkid shortlist
-     (these are often expensive - say so).
+     (these are often expensive - say so). This is the one place potential (PA) counts.
    - **Team context**: a striker's numbers depend on his team. Check `xg` share of
      his club's total (sum `xg` over the club) and xG per shot before calling him
      a bargain or a flop.
    - One line on what the data can't tell you (the game asks a premium over value
      in negotiations, some wages are missing, unloaded leagues have no stats,
      other leagues are simulated at lower detail).
+
+**Data only.** Judge Moneyball targets the way a real club's analysts would: stats,
+attributes, age, value, wage and contract. Don't use the game's hidden CA/PA for
+them unless the user asks. Wonderkids are the exception: their list is built on PA.
 
 Use the CSV for follow-up questions (e.g. "who overperformed their xG?" ->
 sort `goals_minus_xg`; "cheapest striker with 15+ goals?" -> filter and sort `wage`).

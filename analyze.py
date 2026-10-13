@@ -12,8 +12,10 @@ How it scores players:
     competition (min. --min-minutes).
   * Squad audit: your regulars' scores and per-stat percentiles.
   * Moneyball: outscores your best player in that group, under --max-value and --max-wage,
-    age <= --max-age-moneyball.
-  * Wonderkids: age <= --max-age-wonderkid, high PA, already playing senior minutes.
+    age <= --max-age-moneyball. Data only: the game's hidden CA/PA are not used or shown
+    (--show-hidden adds them as columns).
+  * Wonderkids: age <= --max-age-wonderkid, high PA, already playing senior minutes. Potential
+    is the point here, so this list uses PA and shows CA/PA.
 """
 import argparse
 import bisect
@@ -103,7 +105,8 @@ SHORTLIST_COLS = BASE_COLS + [
     ('age', lambda r: r['age']), ('club', lambda r: r['club'][:24]),
     ('league', lambda r: r['competition'][:20]), ('value', lambda r: fmt_value(r['value'])),
     ('wage/wk', lambda r: fmt_money(r['wage'])),
-] + MIN_SCORE_COLS + [('CA', lambda r: r['ca']), ('PA', lambda r: r['pa'])]
+] + MIN_SCORE_COLS
+HIDDEN_COLS = [('CA', lambda r: r['ca']), ('PA', lambda r: r['pa'])]
 
 
 def main():
@@ -118,6 +121,7 @@ def main():
     ap.add_argument('--max-age-wonderkid', type=int, default=21)
     ap.add_argument('--min-pa', type=int, default=150, help='wonderkid potential threshold')
     ap.add_argument('--top', type=int, default=8)
+    ap.add_argument('--show-hidden', action='store_true', help='also show CA/PA in the Moneyball shortlist')
     a = ap.parse_args()
 
     rows = load(a.csv, a.min_minutes)
@@ -148,12 +152,12 @@ def main():
                  and 0 < num(r['wage'], 0) <= a.max_wage and num(r['value'], 0) <= a.max_value * 1e6
                  and r['_score'] >= best_score[g]]
         money.sort(key=lambda r: r['_score'], reverse=True)
-        table(money[:a.top], SHORTLIST_COLS,
+        table(money[:a.top], SHORTLIST_COLS + (HIDDEN_COLS if a.show_hidden else []),
               f'Moneyball {g}: outscore your best {g} ({best_score[g]:.0f}), value <= £{a.max_value:g}M, '
               f'wage <= £{a.max_wage // 1000}K/wk, age <= {a.max_age_moneyball}')
         kids = [r for r in pool if num(r['age'], 99) <= a.max_age_wonderkid and num(r['pa'], 0) >= a.min_pa]
         kids.sort(key=lambda r: (-num(r['pa'], 0), -r['_score']))
-        table(kids[:a.top], SHORTLIST_COLS,
+        table(kids[:a.top], SHORTLIST_COLS + HIDDEN_COLS,
               f'Wonderkids {g}: age <= {a.max_age_wonderkid}, PA >= {a.min_pa}, already playing senior minutes')
 
 

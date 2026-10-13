@@ -55,8 +55,13 @@ rating?"*, *"which of these could I actually afford?"*.
    that position, under your transfer-value and wage ceilings.
 4. **Wonderkids** - 21 or under, high PA, already playing senior minutes.
 
+**The Moneyball analyst is data only.** Squad audit and shortlist work like a real
+club's analysts: stats, value, wage and age, never the game's hidden CA/PA
+(add `--show-hidden` to see them). Wonderkids are the exception: finding potential
+is the point, so that list uses PA and shows CA/PA. `/scout` shows everything.
+
 Percentiles are within each player's own league, so an 80 in Ligue 2 is not an
-80 in the Premier League - check CA alongside the score.
+80 in the Premier League - weigh the league alongside the score.
 
 ## Requirements
 
@@ -176,7 +181,7 @@ getting Claude to debug it.
 - Leagues other than your own are simulated at lower detail: they record about
   half the events (passes, shots...) and almost no distance. That's why players
   are only ranked against their own league, and why distance isn't used for
-  scoring - compare percentiles and CA across leagues, not raw per-90 numbers.
+  scoring - compare percentiles (weighed by league) across leagues, not raw per-90 numbers.
 - Some players' club can't be resolved (`club#<id>`, ~15-30% depending on the
   save, mostly smaller clubs and youth sides) and some wages are missing.
 - Not exported (yet): personality, injuries, release clauses, trophies. The live
