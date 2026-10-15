@@ -183,12 +183,20 @@ def read_entry(raw, entries, name):
 
 
 def game_date(summary):
-    """The summary holds one [u16 day-of-year | time << 9][u16 year] - the current date."""
+    """The summary holds one [u16 day-of-year | time << 9][u16 year] - the current date.
+    Other bytes can look like a date too (a save dated 2031-01-08 had a false 2048-01-02 three bytes
+    earlier, which made every age 17 years too old): take the year most candidates agree on, then
+    its first candidate."""
+    found = []
     for i in range(len(summary) - 3):
         v, year = struct.unpack_from('<HH', summary, i)
         if 2025 <= year <= 2100 and 1 <= v & 0x1ff <= 366:
-            return fm_date(year, v & 0x1ff)
-    return None
+            found.append((year, v & 0x1ff))
+    if not found:
+        return None
+    years = [y for y, _ in found]
+    best = max(years, key=lambda y: (years.count(y), -years.index(y)))
+    return fm_date(*next(c for c in found if c[0] == best))
 
 
 # --- People and clubs ----------------------------------------------------------
